@@ -94,6 +94,20 @@ public class HudView extends View {
     private String stats = "";
     private long statsAt = -100000;
 
+    private volatile boolean wOk = false;
+    private volatile String wTemp = "";
+    private volatile String wDesc = "";
+    private volatile String wRange = "";
+    private volatile String wRain = "";
+    private volatile List<String> newsDe = new ArrayList<String>();
+    private volatile List<String> newsLocal = new ArrayList<String>();
+    private long fetchAt = -10000000L;
+    private boolean fetching = false;
+    private String fitKeyA = "";
+    private String fitValA = "";
+    private String fitKeyB = "";
+    private String fitValB = "";
+
     private int idxSel = -1;
     private int idxN = -1;
     private String idxText = "";
@@ -331,8 +345,11 @@ public class HudView extends View {
         line.setStrokeWidth(1f);
         c.drawLines(grid, line);
 
+        maybeFetch(now);
         drawRings(c, t);
         drawHeader(c);
+        drawWeather(c);
+        drawNews(c, now);
         drawFocusTitle(c, list, n);
         drawRow(c, list, n, t, pitch);
         drawStatus(c, now, w);
@@ -449,7 +466,7 @@ public class HudView extends View {
             }
             it.art.draw(c);
         } else {
-            arc(c, 0, 0, 0, 0, 0); // no-op, setzt nur Paint zurück
+            
             glyph(c, cx, cy - 12f * u);
             txt(c, it.upper, cx, cy + 56f * u, mono, 20f * u, 0.2f, a(GOLD, 230), Paint.Align.CENTER);
         }
@@ -504,7 +521,7 @@ public class HudView extends View {
         line.setStrokeWidth(1.5f * u);
         c.drawLine(LEFT * u, 1020f * u, w - LEFT * u, 1020f * u, line);
         txt(c, stats, LEFT * u, 1052f * u, mono, 19f * u, 0.2f, a(GOLD, 180), Paint.Align.LEFT);
-        txt(c, "JARVIS HOME 0.1", w - LEFT * u, 1052f * u, mono, 19f * u, 0.2f, a(RED, 230), Paint.Align.RIGHT);
+        txt(c, "JARVIS HOME 0.2", w - LEFT * u, 1052f * u, mono, 19f * u, 0.2f, a(RED, 230), Paint.Align.RIGHT);
     }
 
     private void updateStats(long now) {
@@ -537,6 +554,100 @@ public class HudView extends View {
         else if (hour < 11) cGreet = "GUTEN MORGEN";
         else if (hour < 18) cGreet = "GUTEN TAG";
         else cGreet = "GUTEN ABEND";
+    }
+
+    // ---------------------------------------------------------------- Wetter und Nachrichten
+
+    private void maybeFetch(long now) {
+        if (fetching || now - fetchAt < 1800000L) return;
+        fetching = true;
+        fetchAt = now;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final InfoFeed.Result r = InfoFeed.fetch();
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        applyInfo(r);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void applyInfo(InfoFeed.Result r) {
+        if (r.weatherOk) {
+            wTemp = r.temp;
+            wDesc = r.desc;
+            wRange = r.range;
+            wRain = r.rain;
+            wOk = true;
+        }
+        if (!r.de.isEmpty()) newsDe = r.de;
+        if (!r.local.isEmpty()) newsLocal = r.local;
+        if (!r.weatherOk && r.de.isEmpty() && r.local.isEmpty()) {
+            fetchAt = SystemClock.uptimeMillis() - 1500000L; // nach 5 Minuten nochmal versuchen
+        }
+        fetching = false;
+    }
+
+    private void drawWeather(Canvas c) {
+        if (!wOk) return;
+        float x = 730f * u;
+        float y = 118f * u;
+        float w = 370f * u;
+        float h = 252f * u;
+        chamfer(path, x, y, w, h, 18f * u);
+        fill.setColor(0x990C0306);
+        c.drawPath(path, fill);
+        stroke.setColor(a(GOLD, 110));
+        stroke.setStrokeWidth(2f * u);
+        c.drawPath(path, stroke);
+
+        txt(c, InfoFeed.CITY + " // HEUTE", x + 24f * u, y + 42f * u, mono, 19f * u, 0.25f,
+                a(GOLD, 220), Paint.Align.LEFT);
+        txt(c, wTemp, x + 20f * u, y + 150f * u, thin, 112f * u, 0f, WARM, Paint.Align.LEFT);
+        txt(c, wDesc, x + 24f * u, y + 192f * u, mono, 22f * u, 0.2f, RED, Paint.Align.LEFT);
+        txt(c, wRange, x + 24f * u, y + 226f * u, mono, 19f * u, 0.12f, a(GOLD, 220), Paint.Align.LEFT);
+        txt(c, wRain, x + w - 24f * u, y + 226f * u, mono, 19f * u, 0.12f, a(GOLD, 220), Paint.Align.RIGHT);
+    }
+
+    private void drawNews(Canvas c, long now) {
+        List<String> de = newsDe;
+        List<String> lo = newsLocal;
+        long slot = now / 9000L;
+        int al = (int) (255f * Math.min(1f, (now % 9000L) / 450f));
+        float maxW = 960f * u;
+        float size = 32f * u;
+
+        if (!de.isEmpty()) {
+            String hl = de.get((int) (slot % de.size()));
+            if (!hl.equals(fitKeyA)) {
+                fitKeyA = hl;
+                fitValA = fit(hl, maxW, light, size);
+            }
+            txt(c, "// DEUTSCHLAND", LEFT * u, 430f * u, mono, 18f * u, 0.35f, a(RED, 230), Paint.Align.LEFT);
+            txt(c, fitValA, LEFT * u, 470f * u, light, size, 0.02f, a(WARM, al), Paint.Align.LEFT);
+        }
+        if (!lo.isEmpty()) {
+            String hl = lo.get((int) (slot % lo.size()));
+            if (!hl.equals(fitKeyB)) {
+                fitKeyB = hl;
+                fitValB = fit(hl, maxW, light, size);
+            }
+            txt(c, "// " + InfoFeed.CITY, LEFT * u, 512f * u, mono, 18f * u, 0.35f, a(RED, 230), Paint.Align.LEFT);
+            txt(c, fitValB, LEFT * u, 552f * u, light, size, 0.02f, a(WARM, al), Paint.Align.LEFT);
+        }
+    }
+
+    private String fit(String s, float maxW, Typeface tf, float size) {
+        text.setTypeface(tf);
+        text.setTextSize(size);
+        text.setLetterSpacing(0.02f);
+        int cut = text.breakText(s, true, maxW, null);
+        if (cut >= s.length()) return s;
+        return s.substring(0, Math.max(0, cut - 1)).trim() + "\u2026";
     }
 
     // ---------------------------------------------------------------- Helfer
