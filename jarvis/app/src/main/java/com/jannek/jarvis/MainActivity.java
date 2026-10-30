@@ -77,6 +77,6 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        // Home bleibt Home.
+        hud.handleBack();
     }
 }

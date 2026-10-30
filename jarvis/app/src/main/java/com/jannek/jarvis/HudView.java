@@ -16,6 +16,13 @@ import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
+import android.media.tv.TvContract;
+import android.media.tv.TvInputInfo;
+import android.media.tv.TvInputManager;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
 import android.os.Environment;
 import android.os.StatFs;
 import android.os.SystemClock;
@@ -108,6 +115,27 @@ public class HudView extends View {
     private String fitKeyB = "";
     private String fitValB = "";
 
+    private static final int ROW = 0, BAR = 1, DROP = 2;
+    private static final String LIVE_TV = "com.sony.dtv.tvx";
+    private static final float PILL_Y = 40f, PILL_H = 60f;
+    private static final float[] PILL_W = {200f, 300f, 270f};
+
+    private static class Src {
+        String label = "";
+        String id;
+        int state;
+    }
+
+    private int zone = ROW;
+    private int barSel = 0;
+    private int dropSel = 0;
+    private float rowAct = 1f;
+    private final List<Src> sources = new ArrayList<Src>();
+    private boolean online = false;
+    private String netLabel = "WLAN";
+    private long netAt = -100000;
+    private long introAt = 0;
+
     private int idxSel = -1;
     private int idxN = -1;
     private String idxText = "";
@@ -157,12 +185,6 @@ public class HudView extends View {
         Collections.sort(rest, (a, b) -> a.label.compareToIgnoreCase(b.label));
         out.addAll(rest);
 
-        Item s = new Item();
-        s.label = "Einstellungen";
-        s.upper = "EINSTELLUNGEN";
-        s.special = true;
-        s.intent = new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        out.add(s);
         return out;
     }
 
@@ -226,6 +248,18 @@ public class HudView extends View {
 
     public void resetFocus() {
         sel = 0;
+        zone = ROW;
+        barSel = 0;
+        invalidate();
+    }
+
+    /** Zurück-Taste: erst Menü schließen, dann zurück zu den Panels. */
+    public void handleBack() {
+        if (zone == DROP) {
+            zone = BAR;
+        } else if (zone == BAR) {
+            zone = ROW;
+        }
         invalidate();
     }
 
@@ -240,24 +274,119 @@ public class HudView extends View {
         int n = items.size();
         switch (keyCode) {
             case KeyEvent.KEYCODE_DPAD_LEFT:
-                if (sel > 0) sel--;
+                if (zone == ROW) {
+                    if (sel > 0) sel--;
+                } else if (zone == BAR) {
+                    if (barSel > 0) barSel--;
+                }
                 invalidate();
                 return true;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
-                if (sel < n - 1) sel++;
+                if (zone == ROW) {
+                    if (sel < n - 1) sel++;
+                } else if (zone == BAR) {
+                    if (barSel < PILL_W.length - 1) barSel++;
+                }
                 invalidate();
                 return true;
             case KeyEvent.KEYCODE_DPAD_UP:
+                if (zone == ROW) {
+                    zone = BAR;
+                } else if (zone == DROP) {
+                    if (dropSel > 0) dropSel--;
+                }
+                invalidate();
+                return true;
             case KeyEvent.KEYCODE_DPAD_DOWN:
+                if (zone == BAR) {
+                    zone = ROW;
+                } else if (zone == DROP) {
+                    if (dropSel < sources.size() - 1) dropSel++;
+                }
+                invalidate();
                 return true;
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
-                if (event.getRepeatCount() == 0) launch();
+                if (event.getRepeatCount() == 0) {
+                    if (zone == ROW) launch();
+                    else if (zone == BAR) activateBar();
+                    else activateSource();
+                }
+                invalidate();
                 return true;
             default:
                 return super.onKeyDown(keyCode, event);
         }
+    }
+
+    private void activateBar() {
+        if (barSel == 0) {
+            loadSources();
+            dropSel = 0;
+            zone = DROP;
+        } else if (barSel == 1) {
+            startSafely(new Intent(Settings.ACTION_WIFI_SETTINGS));
+        } else {
+            startSafely(new Intent(Settings.ACTION_SETTINGS));
+        }
+    }
+
+    private void startSafely(Intent i) {
+        try {
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void loadSources() {
+        sources.clear();
+        Context ctx = getContext();
+        try {
+            TvInputManager tm = (TvInputManager) ctx.getSystemService(Context.TV_INPUT_SERVICE);
+            if (tm != null) {
+                for (TvInputInfo info : tm.getTvInputList()) {
+                    if (!info.isPassthroughInput()) continue;
+                    Src sr = new Src();
+                    CharSequence lab = info.loadCustomLabel(ctx);
+                    if (lab == null || lab.length() == 0) lab = info.loadLabel(ctx);
+                    sr.label = String.valueOf(lab).toUpperCase(Locale.GERMAN);
+                    sr.id = info.getId();
+                    try {
+                        sr.state = tm.getInputState(sr.id);
+                    } catch (Exception e) {
+                        sr.state = 0;
+                    }
+                    sources.add(sr);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        Src live = new Src();
+        live.label = "LIVE TV";
+        live.id = null;
+        live.state = 2;
+        sources.add(live);
+    }
+
+    private void activateSource() {
+        if (dropSel < 0 || dropSel >= sources.size()) return;
+        Src sr = sources.get(dropSel);
+        zone = ROW;
+        try {
+            if (sr.id != null) {
+                Intent i = new Intent(Intent.ACTION_VIEW);
+                i.setDataAndType(TvContract.buildChannelUriForPassthroughInput(sr.id),
+                        TvContract.Channels.CONTENT_ITEM_TYPE);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(i);
+                return;
+            }
+        } catch (Exception ignored) {
+        }
+        Intent live = getContext().getPackageManager().getLeanbackLaunchIntentForPackage(LIVE_TV);
+        if (live != null) startSafely(live);
     }
 
     private void launch() {
@@ -321,6 +450,10 @@ public class HudView extends View {
         if (w == 0 || h == 0) return;
 
         long now = SystemClock.uptimeMillis();
+        if (introAt == 0) introAt = now;
+        float ie = Math.min(1f, (now - introAt) / 1500f);
+        float ease = 1f - (1f - ie) * (1f - ie);
+
         float dt = last == 0 ? 0.016f : Math.min(0.1f, (now - last) / 1000f);
         last = now;
         float t = now / 1000f;
@@ -333,8 +466,10 @@ public class HudView extends View {
         float target = Math.max(0f, Math.min(maxScroll, (sel - 2) * pitch));
         focusPos += (sel - focusPos) * k;
         scroll += (target - scroll) * k;
+        rowAct += ((zone == ROW ? 1f : 0.3f) - rowAct) * k;
 
         refreshClock(System.currentTimeMillis());
+        refreshNet(now);
 
         c.drawColor(DARK);
         fill.setShader(glow);
@@ -346,24 +481,128 @@ public class HudView extends View {
         c.drawLines(grid, line);
 
         maybeFetch(now);
-        drawRings(c, t);
+        drawRings(c, t, 0.55f + 0.45f * ease);
         drawHeader(c);
         drawWeather(c);
         drawNews(c, now);
         drawFocusTitle(c, list, n);
         drawRow(c, list, n, t, pitch);
         drawStatus(c, now, w);
+        drawBar(c, t, w);
+        drawDropdown(c, w);
+
+        if (ie < 1f) {
+            fill.setColor(a(0x000000, (int) (255f * (1f - ease))));
+            c.drawRect(0, 0, w, h, fill);
+        }
 
         if (running) postInvalidateDelayed(33);
     }
 
-    private void drawRings(Canvas c, float t) {
+    // ---------------------------------------------------------------- Pills und Quellen-Menü
+
+    private float pillX(int i) {
+        float total = 40f;
+        for (float pw : PILL_W) total += pw;
+        float x = getWidth() - LEFT * u - total * u;
+        for (int j = 0; j < i; j++) x += (PILL_W[j] + 20f) * u;
+        return x;
+    }
+
+    private void drawBar(Canvas c, float t, int w) {
+        String[] labels = {"QUELLEN", netLabel, "EINSTELLUNGEN"};
+        for (int i = 0; i < PILL_W.length; i++) {
+            boolean f = zone != ROW && barSel == i;
+            int dot = (i == 1) ? (online ? GOLD : RED) : 0;
+            drawPill(c, pillX(i), PILL_Y * u, PILL_W[i] * u, PILL_H * u, labels[i], f, dot, t);
+        }
+    }
+
+    private void drawPill(Canvas c, float x, float y, float w, float h, String label, boolean focused,
+                          int dot, float t) {
+        chamfer(path, x, y, w, h, 12f * u);
+        fill.setColor(focused ? a(RED, 120) : 0xCC12040A);
+        c.drawPath(path, fill);
+        float pulse = focused ? 0.75f + 0.25f * (float) Math.sin(t * 5f) : 1f;
+        stroke.setColor(focused ? a(WARM, (int) (255 * pulse)) : a(GOLD, 120));
+        stroke.setStrokeWidth((focused ? 3f : 2f) * u);
+        c.drawPath(path, stroke);
+        float tx = x + w / 2f + (dot != 0 ? 14f * u : 0f);
+        txt(c, label, tx, y + h * 0.64f, mono, 22f * u, 0.18f, focused ? WARM : a(GOLD, 235), Paint.Align.CENTER);
+        if (dot != 0) {
+            fill.setColor(dot);
+            c.drawCircle(x + 26f * u, y + h / 2f, 6f * u, fill);
+        }
+    }
+
+    private void drawDropdown(Canvas c, int w) {
+        if (zone != DROP) return;
+        int n = sources.size();
+        float rowH = 58f * u;
+        float x = pillX(0);
+        float y = (PILL_Y + PILL_H + 12f) * u;
+        float pw = 340f * u;
+        float ph = n * rowH + 24f * u;
+        chamfer(path, x, y, pw, ph, 16f * u);
+        fill.setColor(0xF2100308);
+        c.drawPath(path, fill);
+        stroke.setColor(a(GOLD, 200));
+        stroke.setStrokeWidth(2f * u);
+        c.drawPath(path, stroke);
+        for (int i = 0; i < n; i++) {
+            Src sr = sources.get(i);
+            float ry = y + 12f * u + i * rowH;
+            if (i == dropSel) {
+                fill.setColor(a(RED, 130));
+                c.drawRect(x + 8f * u, ry, x + pw - 8f * u, ry + rowH - 6f * u, fill);
+                stroke.setColor(WARM);
+                stroke.setStrokeWidth(2f * u);
+                c.drawRect(x + 8f * u, ry, x + pw - 8f * u, ry + rowH - 6f * u, stroke);
+            }
+            fill.setColor(sr.state == 2 ? GOLD : a(GOLD, 60));
+            c.drawCircle(x + 34f * u, ry + (rowH - 6f * u) / 2f, 6f * u, fill);
+            txt(c, sr.label, x + 56f * u, ry + 36f * u, mono, 22f * u, 0.15f,
+                    i == dropSel ? WARM : a(GOLD, 230), Paint.Align.LEFT);
+        }
+    }
+
+    private void refreshNet(long now) {
+        if (now - netAt < 5000) return;
+        netAt = now;
+        try {
+            Context ctx = getContext();
+            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkCapabilities nc = cm.getNetworkCapabilities(cm.getActiveNetwork());
+            online = nc != null && nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+            if (nc != null && nc.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
+                netLabel = "LAN";
+            } else if (online) {
+                String name = "";
+                try {
+                    WifiManager wm = (WifiManager) ctx.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                    WifiInfo wi = wm.getConnectionInfo();
+                    if (wi != null && wi.getSSID() != null) name = wi.getSSID().replace("\"", "");
+                } catch (Exception ignored) {
+                }
+                if (name.isEmpty() || name.startsWith("<")) name = "ONLINE";
+                if (name.length() > 12) name = name.substring(0, 12);
+                netLabel = name.toUpperCase(Locale.GERMAN);
+            } else {
+                netLabel = "OFFLINE";
+            }
+        } catch (Exception e) {
+            netLabel = "WLAN";
+        }
+    }
+
+    private void drawRings(Canvas c, float t, float scaleIn) {
         float cx = getWidth() * 0.74f;
         float cy = getHeight() * 0.30f;
         float pulse = 0.5f + 0.5f * (float) Math.sin(t * 2.2f);
 
         c.save();
         c.translate(cx, cy);
+        c.scale(scaleIn, scaleIn);
 
         c.save();
         c.rotate(t * 4f);
@@ -434,7 +673,7 @@ public class HudView extends View {
         for (int i = 0; i < n; i++) {
             float x = LEFT * u + i * pitch - scroll;
             if (x > w || x + PW * u < 0) continue;
-            float f = Math.max(0f, 1f - Math.abs(i - focusPos));
+            float f = Math.max(0f, 1f - Math.abs(i - focusPos)) * rowAct;
             drawTile(c, list.get(i), x, ROW_Y * u, f, t);
         }
     }
@@ -521,7 +760,7 @@ public class HudView extends View {
         line.setStrokeWidth(1.5f * u);
         c.drawLine(LEFT * u, 1020f * u, w - LEFT * u, 1020f * u, line);
         txt(c, stats, LEFT * u, 1052f * u, mono, 19f * u, 0.2f, a(GOLD, 180), Paint.Align.LEFT);
-        txt(c, "JARVIS HOME 0.2", w - LEFT * u, 1052f * u, mono, 19f * u, 0.2f, a(RED, 230), Paint.Align.RIGHT);
+        txt(c, "JARVIS HOME 1.0", w - LEFT * u, 1052f * u, mono, 19f * u, 0.2f, a(RED, 230), Paint.Align.RIGHT);
     }
 
     private void updateStats(long now) {
@@ -533,7 +772,7 @@ public class HudView extends View {
             long ramMb = mi.availMem / 1048576L;
             StatFs sf = new StatFs(Environment.getDataDirectory().getPath());
             long diskMb = sf.getAvailableBytes() / 1048576L;
-            int apps = Math.max(0, items.size() - 1);
+            int apps = items.size();
             stats = "RAM " + ramMb + " MB FREI   //   SPEICHER " + diskMb + " MB FREI   //   APPS " + apps;
         } catch (Exception e) {
             stats = "SYSTEM ONLINE";

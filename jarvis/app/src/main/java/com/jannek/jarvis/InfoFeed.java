@@ -27,8 +27,9 @@ final class InfoFeed {
     private static final String[] DE_URLS = {
             "https://www.tagesschau.de/index~rss2.xml",
             "https://www.tagesschau.de/xml/rss2/"};
-    private static final String LOCAL_URL =
-            "https://news.google.com/rss/search?q=Essen&hl=de&gl=DE&ceid=DE:de";
+    private static final String[] LOCAL_URLS = {
+            "https://news.google.com/rss/search?q=Essen%20OR%20Ruhrgebiet%20when%3A1d&hl=de&gl=DE&ceid=DE:de",
+            "https://news.google.com/rss/search?q=Essen&hl=de&gl=DE&ceid=DE:de"};
 
     static final class Result {
         boolean weatherOk;
@@ -56,9 +57,12 @@ final class InfoFeed {
             }
             if (!r.de.isEmpty()) break;
         }
-        try {
-            r.local = parseRss(get(LOCAL_URL), 8);
-        } catch (Exception ignored) {
+        for (String u : LOCAL_URLS) {
+            try {
+                r.local = parseRss(get(u), 8);
+            } catch (Exception ignored) {
+            }
+            if (!r.local.isEmpty()) break;
         }
         return r;
     }
@@ -67,7 +71,7 @@ final class InfoFeed {
         HttpURLConnection con = (HttpURLConnection) new URL(address).openConnection();
         con.setConnectTimeout(8000);
         con.setReadTimeout(8000);
-        con.setRequestProperty("User-Agent", "JarvisHome/0.2");
+        con.setRequestProperty("User-Agent", "JarvisHome/1.0");
         InputStream in = con.getInputStream();
         try {
             ByteArrayOutputStream out = new ByteArrayOutputStream();

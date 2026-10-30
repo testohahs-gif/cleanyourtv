@@ -10,8 +10,19 @@ android {
         applicationId 'com.jannek.jarvis'
         minSdk 26
         targetSdk 34
-        versionCode 2
-        versionName '0.2'
+        versionCode 3
+        versionName '1.0'
+    }
+
+    // Fester Schlüssel: Updates lassen sich ab jetzt direkt über die installierte Version spielen.
+    // Für ein privates, per ADB installiertes Gerät ist ein eingechecktes Schlüsselpaar in Ordnung.
+    signingConfigs {
+        debug {
+            storeFile file('jarvis-debug.keystore')
+            storePassword 'android'
+            keyAlias 'jarvis'
+            keyPassword 'android'
+        }
     }
 
     compileOptions {
